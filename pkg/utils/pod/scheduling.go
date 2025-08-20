@@ -17,6 +17,7 @@ limitations under the License.
 package pod
 
 import (
+	"context"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/utils/clock"
 
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+	"sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 )
 
@@ -40,12 +42,18 @@ func IsActive(pod *corev1.Pod) bool {
 // - Isn't owned by a DaemonSet
 // - Isn't a mirror pod (https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/)
 func IsReschedulable(pod *corev1.Pod) bool {
+	return IsReschedulableWithContext(context.Background(), pod)
+}
+
+// IsReschedulableWithContext is the context-aware version of IsReschedulable
+func IsReschedulableWithContext(ctx context.Context, pod *corev1.Pod) bool {
 	// StatefulSet pods can be handled differently here because we know that StatefulSet pods MUST
 	// get deleted before new pods are re-created. This means that we can model terminating pods for StatefulSets
 	// differently for higher availability by considering terminating pods for scheduling
 	return (IsActive(pod) || (IsOwnedByStatefulSet(pod) && IsTerminating(pod))) &&
 		!IsOwnedByDaemonSet(pod) &&
-		!IsOwnedByNode(pod)
+		!IsOwnedByNode(pod) &&
+		!IsOwnedByOtherDaemonPods(ctx, pod)
 }
 
 // IsEvictable checks if a pod is evictable by Karpenter by ensuring that the pod:
@@ -98,11 +106,17 @@ func IsPodEligibleForForcedEviction(pod *corev1.Pod, nodeGracePeriodExpirationTi
 // - Isn't owned by a DaemonSet
 // - Isn't a mirror pod (https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/)
 func IsProvisionable(pod *corev1.Pod) bool {
+	return IsProvisionableWithContext(context.Background(), pod)
+}
+
+// IsProvisionableWithContext is the context-aware version of IsProvisionable
+func IsProvisionableWithContext(ctx context.Context, pod *corev1.Pod) bool {
 	return FailedToSchedule(pod) &&
 		!IsScheduled(pod) &&
 		!IsPreempting(pod) &&
 		!IsOwnedByDaemonSet(pod) &&
-		!IsOwnedByNode(pod)
+		!IsOwnedByNode(pod) &&
+		!IsOwnedByOtherDaemonPods(ctx, pod)
 }
 
 // IsDisruptable checks if a pod can be disrupted based on validating the `karpenter.sh/do-not-disrupt` annotation on the pod.
@@ -180,6 +194,22 @@ func IsOwnedBy(pod *corev1.Pod, gvks []schema.GroupVersionKind) bool {
 		}
 	}
 	return false
+}
+
+// IsOwnedByOtherDaemonPods returns true if the pod is owned by a configured other daemon type
+func IsOwnedByOtherDaemonPods(ctx context.Context, pod *corev1.Pod) bool {
+	opts := options.FromContext(ctx)
+	if opts == nil || len(opts.OtherDaemonGVKs) == 0 {
+		return false
+	}
+	
+	gvks, err := options.ParseGVKList(opts.OtherDaemonGVKs)
+	if err != nil {
+		// Log error but don't fail scheduling
+		return false
+	}
+	
+	return IsOwnedBy(pod, gvks)
 }
 
 func HasDoNotDisrupt(pod *corev1.Pod) bool {

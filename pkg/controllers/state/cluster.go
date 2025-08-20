@@ -63,6 +63,8 @@ type Cluster struct {
 	nodeClaimNameToProviderID map[string]string               // node claim name -> provider id
 	nodePoolResources         map[string]corev1.ResourceList  // node pool name -> resource list
 	daemonSetPods             sync.Map                        // daemonSet -> existing pod
+	otherDaemonPods           sync.Map                        // other daemon pods key -> pod
+	otherDaemonGVKs           []schema.GroupVersionKind       // configured other daemon GVKs
 
 	podAcks                         sync.Map // pod namespaced name -> time when Karpenter first saw the pod as pending
 	podsSchedulingAttempted         sync.Map // pod namespaced name -> time when Karpenter tried to schedule a pod
@@ -370,6 +372,10 @@ func (c *Cluster) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 		err = c.updateNodeUsageFromPod(ctx, pod)
 	}
 	c.updatePodAntiAffinities(pod)
+	
+	// Track other daemon pods for scheduling purposes
+	c.updateOtherDaemonPod(ctx, pod)
+	
 	return err
 }
 
@@ -602,6 +608,43 @@ func (c *Cluster) UpdateDaemonSet(ctx context.Context, daemonset *appsv1.DaemonS
 
 func (c *Cluster) DeleteDaemonSet(key types.NamespacedName) {
 	c.daemonSetPods.Delete(key)
+}
+
+// SetOtherDaemonGVKs configures the GVKs for other daemon types
+func (c *Cluster) SetOtherDaemonGVKs(gvks []schema.GroupVersionKind) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.otherDaemonGVKs = gvks
+}
+
+// GetOtherDaemonPods returns all other daemon pods as a slice
+func (c *Cluster) GetOtherDaemonPods() []*corev1.Pod {
+	var pods []*corev1.Pod
+	c.otherDaemonPods.Range(func(key, value interface{}) bool {
+		if pod, ok := value.(*corev1.Pod); ok {
+			pods = append(pods, pod.DeepCopy())
+		}
+		return true
+	})
+	return pods
+}
+
+// updateOtherDaemonPod updates or removes an other daemon pod from tracking
+func (c *Cluster) updateOtherDaemonPod(ctx context.Context, pod *corev1.Pod) {
+	if len(c.otherDaemonGVKs) == 0 {
+		return
+	}
+	
+	podKey := client.ObjectKeyFromObject(pod)
+	isOtherDaemon := podutils.IsOwnedBy(pod, c.otherDaemonGVKs)
+	
+	if isOtherDaemon && pod.DeletionTimestamp == nil {
+		// Store/update the other daemon pod
+		c.otherDaemonPods.Store(podKey, pod.DeepCopy())
+	} else {
+		// Remove if it's no longer an other daemon or being deleted
+		c.otherDaemonPods.Delete(podKey)
+	}
 }
 
 // WARNING

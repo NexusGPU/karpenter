@@ -449,11 +449,14 @@ func (in *StateNode) updateForPod(ctx context.Context, kubeClient client.Client,
 	}
 	in.podRequests[podKey] = resources.RequestsForPods(pod)
 	in.podLimits[podKey] = resources.LimitsForPods(pod)
-	// if it's a daemonset, we track what it has requested separately
-	if podutils.IsOwnedByDaemonSet(pod) {
+	
+	// if it's a daemonset or other configured daemon, we track what it has requested separately
+	isDaemon := podutils.IsOwnedByDaemonSet(pod) || podutils.IsOwnedByOtherDaemonPods(ctx, pod)
+	if isDaemon {
 		in.daemonSetRequests[podKey] = resources.RequestsForPods(pod)
 		in.daemonSetLimits[podKey] = resources.LimitsForPods(pod)
 	}
+	
 	in.hostPortUsage.Add(pod, hostPorts)
 	in.volumeUsage.Add(pod, volumes)
 	return nil

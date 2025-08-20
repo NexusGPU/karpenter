@@ -22,10 +22,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/samber/lo"
 	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"sigs.k8s.io/karpenter/pkg/utils/env"
 )
@@ -86,6 +88,7 @@ type Options struct {
 	minValuesPolicyRaw      string
 	MinValuesPolicy         MinValuesPolicy
 	FeatureGates            FeatureGates
+	OtherDaemonGVKs         []string
 }
 
 type FlagSet struct {
@@ -125,6 +128,7 @@ func (o *Options) AddFlags(fs *FlagSet) {
 	fs.StringVar(&o.preferencePolicyRaw, "preference-policy", env.WithDefaultString("PREFERENCE_POLICY", string(PreferencePolicyRespect)), "How the Karpenter scheduler should treat preferences. Preferences include preferredDuringSchedulingIgnoreDuringExecution node and pod affinities/anti-affinities and ScheduleAnyways topologySpreadConstraints. Can be one of 'Ignore' and 'Respect'")
 	fs.StringVar(&o.minValuesPolicyRaw, "min-values-policy", env.WithDefaultString("MIN_VALUES_POLICY", string(MinValuesPolicyStrict)), "Min values policy for scheduling. Options include 'Strict' for existing behavior where min values are strictly enforced or 'BestEffort' where Karpenter relaxes min values when it isn't satisfied.")
 	fs.StringVar(&o.FeatureGates.inputStr, "feature-gates", env.WithDefaultString("FEATURE_GATES", "NodeRepair=false,ReservedCapacity=true,SpotToSpotConsolidation=false,NodeOverlay=false,StaticCapacity=false"), "Optional features can be enabled / disabled using feature gates. Current options are: NodeRepair, ReservedCapacity, SpotToSpotConsolidation, NodeOverlay and StaticCapacity.")
+	fs.Var(cliflag.NewStringSlice(&o.OtherDaemonGVKs), "other-daemon-gvks", "Comma-separated list of GroupVersionKind (group/version/kind) for pods that should be treated as daemon pods. Example: 'custom.io/v1/CustomDaemon,operator.io/v1/OperatorDaemon'. Can also be set via OTHER_DAEMON_GVKS environment variable.")
 }
 
 func (o *Options) Parse(fs *FlagSet, args ...string) error {
@@ -153,6 +157,19 @@ func (o *Options) Parse(fs *FlagSet, args ...string) error {
 	o.FeatureGates = gates
 	o.PreferencePolicy = PreferencePolicy(o.preferencePolicyRaw)
 	o.MinValuesPolicy = MinValuesPolicy(o.minValuesPolicyRaw)
+	
+	// Parse OtherDaemonGVKs from environment variable if not set via flags
+	if len(o.OtherDaemonGVKs) == 0 {
+		if envGVKs := env.WithDefaultString("OTHER_DAEMON_GVKS", ""); envGVKs != "" {
+			o.OtherDaemonGVKs = strings.Split(envGVKs, ",")
+		}
+	}
+	
+	// Validate OtherDaemonGVKs format
+	if _, err := ParseGVKList(o.OtherDaemonGVKs); err != nil {
+		return fmt.Errorf("parsing other daemon GVKs, %w", err)
+	}
+	
 	return nil
 }
 
@@ -207,4 +224,25 @@ func FromContext(ctx context.Context) *Options {
 		panic("options doesn't exist in context")
 	}
 	return retval.(*Options)
+}
+
+// ParseGVKList parses a list of GVK strings in the format "group/version/kind"
+func ParseGVKList(gvkStrings []string) ([]schema.GroupVersionKind, error) {
+	var gvks []schema.GroupVersionKind
+	for _, gvkStr := range gvkStrings {
+		gvkStr = strings.TrimSpace(gvkStr)
+		if gvkStr == "" {
+			continue
+		}
+		parts := strings.Split(gvkStr, "/")
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("invalid GVK format %q, expected 'group/version/kind'", gvkStr)
+		}
+		gvks = append(gvks, schema.GroupVersionKind{
+			Group:   parts[0],
+			Version: parts[1],
+			Kind:    parts[2],
+		})
+	}
+	return gvks, nil
 }

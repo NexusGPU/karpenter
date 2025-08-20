@@ -458,7 +458,7 @@ func (p *Provisioner) getDaemonSetPods(ctx context.Context) ([]*corev1.Pod, erro
 		return nil, fmt.Errorf("listing daemonsets, %w", err)
 	}
 
-	return lo.Map(daemonSetList.Items, func(d appsv1.DaemonSet, _ int) *corev1.Pod {
+	daemonPods := lo.Map(daemonSetList.Items, func(d appsv1.DaemonSet, _ int) *corev1.Pod {
 		pod := p.cluster.GetDaemonSetPod(&d)
 		if pod == nil {
 			pod = &corev1.Pod{Spec: d.Spec.Template.Spec}
@@ -476,7 +476,12 @@ func (p *Provisioner) getDaemonSetPods(ctx context.Context) ([]*corev1.Pod, erro
 			pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = d.Spec.Template.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 		}
 		return pod
-	}), nil
+	})
+
+	// Add other daemon pods from cluster state (high performance, no API calls)
+	otherDaemonPods := p.cluster.GetOtherDaemonPods()
+	
+	return append(daemonPods, otherDaemonPods...), nil
 }
 
 func (p *Provisioner) Validate(ctx context.Context, pod *corev1.Pod) error {

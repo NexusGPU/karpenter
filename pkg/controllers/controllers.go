@@ -68,6 +68,13 @@ func NewControllers(
 	cloudProvider cloudprovider.CloudProvider,
 	cluster *state.Cluster,
 ) []controller.Controller {
+	// Configure other daemon GVKs from options
+	if opts := options.FromContext(ctx); opts != nil && len(opts.OtherDaemonGVKs) > 0 {
+		if gvks, err := options.ParseGVKList(opts.OtherDaemonGVKs); err == nil {
+			cluster.SetOtherDaemonGVKs(gvks)
+		}
+	}
+
 	p := provisioning.NewProvisioner(kubeClient, recorder, cloudProvider, cluster, clock)
 	evictionQueue := terminator.NewQueue(kubeClient, recorder)
 	disruptionQueue := disruption.NewQueue(kubeClient, recorder, cluster, clock, p)
